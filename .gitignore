@@ -45,3 +45,12 @@ bun.lock
 .claude/memory/
 career-dashboard
 package-lock.json
+
+# Scratch / working artifacts (batch JD dumps, scan logs — not source)
+*-jds.json
+jd-batch.json
+fresh-*.json
+scan-output.txt
+
+# User proof points (personal data — user-layer, never committed)
+article-digest.md

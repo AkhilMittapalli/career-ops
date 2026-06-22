@@ -31,6 +31,7 @@ mkdirSync('data', { recursive: true });
 
 const CONCURRENCY = 10;
 const FETCH_TIMEOUT_MS = 10_000;
+const DEFAULT_FRESHNESS_DAYS = 30; // skip jobs older than this; overridable via portals.yml `freshness_days`
 
 // ── API detection ───────────────────────────────────────────────────
 
@@ -81,6 +82,7 @@ function parseGreenhouse(json, companyName) {
     url: j.absolute_url || '',
     company: companyName,
     location: j.location?.name || '',
+    posted: j.updated_at || j.first_published || null, // ISO timestamp
   }));
 }
 
@@ -91,6 +93,7 @@ function parseAshby(json, companyName) {
     url: j.jobUrl || '',
     company: companyName,
     location: j.location || '',
+    posted: j.publishedDate || j.updatedAt || null, // ISO timestamp
   }));
 }
 
@@ -101,6 +104,7 @@ function parseLever(json, companyName) {
     url: j.hostedUrl || '',
     company: companyName,
     location: j.categories?.location || '',
+    posted: j.createdAt ? new Date(j.createdAt).toISOString() : null, // epoch ms → ISO
   }));
 }
 
@@ -142,6 +146,21 @@ function buildTitleFilter(titleFilter) {
 //   - `allow` empty → pass (already cleared block)
 //   - `allow` non-empty → must match at least one keyword
 // All matches are case-insensitive substring.
+
+// ── Freshness filter ────────────────────────────────────────────────
+// Skip jobs whose posted/updated date is older than `freshnessDays`.
+// Jobs with no posted date pass through (don't penalize missing data).
+
+function buildFreshnessFilter(freshnessDays) {
+  if (!freshnessDays || freshnessDays <= 0) return () => true;
+  const cutoff = Date.now() - freshnessDays * 24 * 60 * 60 * 1000;
+  return (postedIso) => {
+    if (!postedIso) return true; // missing date = pass
+    const t = Date.parse(postedIso);
+    if (Number.isNaN(t)) return true;
+    return t >= cutoff;
+  };
+}
 
 function buildLocationFilter(locationFilter) {
   if (!locationFilter) return () => true;
@@ -290,6 +309,8 @@ async function main() {
   const companies = config.tracked_companies || [];
   const titleFilter = buildTitleFilter(config.title_filter);
   const locationFilter = buildLocationFilter(config.location_filter);
+  const freshnessDays = config.freshness_days ?? DEFAULT_FRESHNESS_DAYS;
+  const freshnessFilter = buildFreshnessFilter(freshnessDays);
 
   // 2. Filter to enabled companies with detectable APIs
   const targets = companies
@@ -312,6 +333,7 @@ async function main() {
   let totalFound = 0;
   let totalFilteredTitle = 0;
   let totalFilteredLocation = 0;
+  let totalFilteredStale = 0;
   let totalDupes = 0;
   const newOffers = [];
   const errors = [];
@@ -330,6 +352,10 @@ async function main() {
         }
         if (!locationFilter(job.location)) {
           totalFilteredLocation++;
+          continue;
+        }
+        if (!freshnessFilter(job.posted)) {
+          totalFilteredStale++;
           continue;
         }
         if (seenUrls.has(job.url)) {
@@ -367,6 +393,7 @@ async function main() {
   console.log(`Total jobs found:      ${totalFound}`);
   console.log(`Filtered by title:     ${totalFilteredTitle} removed`);
   console.log(`Filtered by location:  ${totalFilteredLocation} removed`);
+  console.log(`Filtered by age (>${freshnessDays}d): ${totalFilteredStale} removed`);
   console.log(`Duplicates:            ${totalDupes} skipped`);
   console.log(`New offers added:      ${newOffers.length}`);
 
